@@ -100,11 +100,40 @@ export async function POST(req: NextRequest) {
             data: { processedAt: new Date() },
           })
 
-          // Broadcast via SSE
-          sseBroadcaster.broadcast(channelAccount.workspaceId, "message", {
-            type: "new_message",
-            channelAccountId: channelAccount.id,
+          // Get conversation ID for SSE broadcast
+          // Find contact by searching all contacts (since handles is JSON)
+          const allContacts = await prisma.contact.findMany({
+            where: { workspaceId: channelAccount.workspaceId },
           })
+          
+          const contact = allContacts.find((c) => {
+            const handles = c.handles as { fb_psid?: string; ig_id?: string }
+            if (channelType === "facebook_page") {
+              return handles.fb_psid === event.contactExternalId
+            } else if (channelType === "instagram_business") {
+              return handles.ig_id === event.contactExternalId
+            }
+            return false
+          })
+
+          if (contact) {
+            const conversation = await prisma.conversation.findFirst({
+              where: {
+                workspaceId: channelAccount.workspaceId,
+                channelAccountId: channelAccount.id,
+                contactId: contact.id,
+              },
+            })
+
+            if (conversation) {
+              // Broadcast via SSE
+              sseBroadcaster.broadcast(channelAccount.workspaceId, "message", {
+                type: "new_message",
+                conversationId: conversation.id,
+                channelAccountId: channelAccount.id,
+              })
+            }
+          }
         } catch (error) {
           // Mark as error
           await prisma.webhookEvent.updateMany({

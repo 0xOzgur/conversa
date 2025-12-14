@@ -34,6 +34,7 @@ export function normalizeMetaWebhook(
           channelExternalId,
           contactExternalId,
           eventType: "message",
+          direction: "inbound", // Meta webhooks are always inbound (user messages to page)
           message: {
             text: msg.text,
             timestamp,
@@ -69,6 +70,7 @@ export function normalizeMetaWebhook(
           contactExternalId,
           contactName: value.from.username,
           eventType,
+          direction: "inbound", // Comments are always inbound
           message: {
             text: value.message,
             timestamp,
