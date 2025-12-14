@@ -159,7 +159,6 @@ export async function processInboundEvent(
       direction: event.direction, // Use direction from event (inbound or outbound)
       messageType,
       body: event.message.text || (messageType === "image" ? "[Image]" : messageType === "video" ? "[Video]" : messageType === "audio" ? "[Audio]" : null),
-      mediaUrl: event.message.mediaUrl, // Save mediaUrl for outbound messages too
       externalMessageId: event.message.externalMessageId,
       sentAt: event.direction === "outbound" ? event.message.timestamp : null,
       receivedAt: event.direction === "inbound" ? event.message.timestamp : null,

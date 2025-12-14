@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { signIn } from "next-auth/react"
 import { useRouter, useSearchParams } from "next/navigation"
+import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -47,7 +48,16 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Unified Inbox</CardTitle>
+          <div className="flex items-center justify-center mb-2">
+            <Image
+              src="/conversa-logo.png"
+              alt="Conversa"
+              width={150}
+              height={40}
+              className="h-10 w-auto"
+              unoptimized
+            />
+          </div>
           <CardDescription>Sign in to your account</CardDescription>
         </CardHeader>
         <CardContent>

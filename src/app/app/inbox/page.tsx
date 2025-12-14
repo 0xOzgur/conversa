@@ -14,6 +14,11 @@ interface Conversation {
     id: string
     primaryName: string
     avatarUrl: string | null
+    handles: {
+      wa_id?: string
+      ig_id?: string
+      fb_psid?: string
+    }
   }
   channelAccount: {
     id: string
@@ -51,9 +56,14 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [filterStatus, setFilterStatus] = useState<"all" | "unread" | "archived">("all")
+  const [showProfilePanel, setShowProfilePanel] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const lastMessageIdRef = useRef<string | null>(null)
   const selectedConversationRef = useRef<Conversation | null>(null)
+  const isUserScrollingRef = useRef(false)
+  const shouldAutoScrollRef = useRef(false)
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const loadConversationsRef = useRef<() => Promise<Conversation[]>>()
   const loadMessagesRef = useRef<(id: string) => Promise<Message[]>>()
   const filterStatusRef = useRef<"all" | "unread" | "archived">("all")
@@ -157,12 +167,9 @@ export default function InboxPage() {
               const current = selectedConversationRef.current
               if (current && current.id === data.conversationId) {
                 // Reload messages for the selected conversation
-                loadMsgs(data.conversationId).then(() => {
-                  // Small delay to ensure DOM is updated, then scroll
-                  setTimeout(() => {
-                    scrollToBottom()
-                  }, 100)
-                })
+                // Mark that we should auto-scroll when messages are loaded
+                shouldAutoScrollRef.current = true
+                loadMsgs(data.conversationId)
               }
             }
           })
@@ -224,23 +231,48 @@ export default function InboxPage() {
     if (selectedConversation) {
       // Reset last message ID when switching conversations
       lastMessageIdRef.current = null
-      loadMessages(selectedConversation.id)
+      loadMessages(selectedConversation.id).then(() => {
+        // Scroll to bottom when conversation is first loaded
+        setTimeout(() => {
+          scrollToBottom()
+        }, 100)
+      })
       // Mark as read
       markAsRead(selectedConversation.id)
     }
   }, [selectedConversation, loadMessages])
 
-  // Auto-scroll to bottom when new message is added
+  // Auto-scroll to bottom ONLY when explicitly requested (new message or first load)
   useEffect(() => {
     if (messages.length > 0) {
       const lastMessage = messages[messages.length - 1]
-      // Only scroll if it's a new message (different ID)
-      if (lastMessage.id !== lastMessageIdRef.current) {
+      const previousLastId = lastMessageIdRef.current
+      
+      // Only process if it's a new message
+      if (lastMessage.id !== previousLastId) {
         lastMessageIdRef.current = lastMessage.id
-        // Small delay to ensure DOM is updated
-        setTimeout(() => {
-          scrollToBottom()
-        }, 100)
+        
+        // Only auto-scroll if:
+        // 1. First load (conversation just opened), OR
+        // 2. Explicitly requested (new message via SSE or sent) AND user is not manually scrolling
+        const isFirstLoad = previousLastId === null
+        const shouldScroll = isFirstLoad || (shouldAutoScrollRef.current && !isUserScrollingRef.current)
+        
+        if (shouldScroll) {
+          // Reset the flag immediately
+          shouldAutoScrollRef.current = false
+          
+          // Scroll after DOM update
+          setTimeout(() => {
+            // Final check: only scroll if user is not manually scrolling
+            if (!isUserScrollingRef.current) {
+              scrollToBottom()
+            }
+          }, 150)
+        } else {
+          // Reset flag even if we don't scroll
+          shouldAutoScrollRef.current = false
+        }
       }
     }
   }, [messages])
@@ -288,12 +320,9 @@ export default function InboxPage() {
         
         // Wait a bit for webhook to process, then reload messages and scroll
         setTimeout(() => {
-          loadMessages(selectedConversation.id).then(() => {
-            // Small delay to ensure DOM is updated
-            setTimeout(() => {
-              scrollToBottom()
-            }, 100)
-          })
+          // Mark that we should auto-scroll when messages are loaded
+          shouldAutoScrollRef.current = true
+          loadMessages(selectedConversation.id)
         }, 500)
       }
     } catch (error) {
@@ -318,6 +347,32 @@ export default function InboxPage() {
     if (minutes < 60) return `${minutes}m ago`
     if (minutes < 1440) return `${Math.floor(minutes / 60)}h ago`
     return date.toLocaleDateString()
+  }
+
+  const getChannelIcon = (channelType: string) => {
+    switch (channelType) {
+      case "whatsapp_evolution":
+        return "💬"
+      case "facebook_page":
+        return "📘"
+      case "instagram_business":
+        return "📷"
+      default:
+        return "💬"
+    }
+  }
+
+  const getChannelColor = (channelType: string) => {
+    switch (channelType) {
+      case "whatsapp_evolution":
+        return "bg-green-100 text-green-700 border-green-200"
+      case "facebook_page":
+        return "bg-blue-100 text-blue-700 border-blue-200"
+      case "instagram_business":
+        return "bg-pink-100 text-pink-700 border-pink-200"
+      default:
+        return "bg-gray-100 text-gray-700 border-gray-200"
+    }
   }
 
   return (
@@ -374,9 +429,26 @@ export default function InboxPage() {
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium truncate">{conv.contact.primaryName}</div>
-                  <div className="text-sm text-muted-foreground truncate">
-                    {conv.channelAccount.displayName}
+                  <div className="font-medium truncate">
+                    {conv.contact.primaryName}
+                  </div>
+                  <div className="text-sm text-muted-foreground truncate flex items-center gap-1.5">
+                    <span
+                      className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-xs ${getChannelColor(
+                        conv.channelAccount.type
+                      )}`}
+                    >
+                      {getChannelIcon(conv.channelAccount.type)}
+                    </span>
+                    <span>
+                      {conv.channelAccount.type === "whatsapp_evolution"
+                        ? "WhatsApp"
+                        : conv.channelAccount.type === "facebook_page"
+                        ? "Facebook"
+                        : conv.channelAccount.type === "instagram_business"
+                        ? "Instagram"
+                        : "Unknown"}
+                    </span>
                   </div>
                   {conv.messages[0] && (
                     <div className="text-sm text-muted-foreground truncate mt-1">
@@ -401,17 +473,200 @@ export default function InboxPage() {
       </div>
 
       {/* Message Thread */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col relative">
         {selectedConversation ? (
           <>
+            {/* Profile Panel */}
+            {showProfilePanel && (
+              <div className="absolute right-0 top-0 bottom-0 w-80 bg-background border-l z-10 overflow-y-auto">
+                <div className="p-4 border-b flex items-center justify-between">
+                  <h3 className="font-semibold">Contact Details</h3>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowProfilePanel(false)}
+                  >
+                    ✕
+                  </Button>
+                </div>
+                <div className="p-4 space-y-4">
+                  {/* Avatar */}
+                  <div className="flex flex-col items-center">
+                    {selectedConversation.contact.avatarUrl ? (
+                      <img
+                        src={selectedConversation.contact.avatarUrl}
+                        alt={selectedConversation.contact.primaryName}
+                        className="w-24 h-24 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-24 h-24 rounded-full bg-muted flex items-center justify-center text-3xl">
+                        {selectedConversation.contact.primaryName.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <h3 className="mt-3 font-semibold text-lg">
+                      {selectedConversation.contact.primaryName}
+                    </h3>
+                  </div>
+
+                  {/* Channel Info */}
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground uppercase">
+                        Channel
+                      </label>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span
+                          className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-sm border ${getChannelColor(
+                            selectedConversation.channelAccount.type
+                          )}`}
+                        >
+                          {getChannelIcon(selectedConversation.channelAccount.type)}
+                        </span>
+                        <span className="text-sm">
+                          {selectedConversation.channelAccount.type === "whatsapp_evolution"
+                            ? "WhatsApp"
+                            : selectedConversation.channelAccount.type === "facebook_page"
+                            ? "Facebook"
+                            : selectedConversation.channelAccount.type === "instagram_business"
+                            ? "Instagram"
+                            : "Unknown"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* WhatsApp Phone */}
+                    {selectedConversation.channelAccount.type === "whatsapp_evolution" &&
+                      selectedConversation.contact.handles.wa_id && (
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase">
+                            Phone Number
+                          </label>
+                          <div className="mt-1">
+                            <a
+                              href={`https://wa.me/${selectedConversation.contact.handles.wa_id.replace(/[^0-9]/g, "")}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-primary hover:underline flex items-center gap-2"
+                            >
+                              {selectedConversation.contact.handles.wa_id}
+                              <span className="text-xs">↗</span>
+                            </a>
+                          </div>
+                        </div>
+                      )}
+
+                    {/* Facebook Profile */}
+                    {selectedConversation.channelAccount.type === "facebook_page" &&
+                      selectedConversation.contact.handles.fb_psid && (
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase">
+                            Facebook Profile
+                          </label>
+                          <div className="mt-1">
+                            <a
+                              href={`https://facebook.com/${selectedConversation.contact.handles.fb_psid}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-primary hover:underline flex items-center gap-2"
+                            >
+                              View Profile
+                              <span className="text-xs">↗</span>
+                            </a>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              ID: {selectedConversation.contact.handles.fb_psid}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                    {/* Instagram Profile */}
+                    {selectedConversation.channelAccount.type === "instagram_business" &&
+                      selectedConversation.contact.handles.ig_id && (
+                        <div>
+                          <label className="text-xs font-medium text-muted-foreground uppercase">
+                            Instagram Profile
+                          </label>
+                          <div className="mt-1">
+                            <a
+                              href={`https://instagram.com/${selectedConversation.contact.handles.ig_id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm text-primary hover:underline flex items-center gap-2"
+                            >
+                              View Profile
+                              <span className="text-xs">↗</span>
+                            </a>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              ID: {selectedConversation.contact.handles.ig_id}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                    {/* All Handles */}
+                    {(selectedConversation.contact.handles.wa_id ||
+                      selectedConversation.contact.handles.ig_id ||
+                      selectedConversation.contact.handles.fb_psid) && (
+                      <div>
+                        <label className="text-xs font-medium text-muted-foreground uppercase">
+                          All Identifiers
+                        </label>
+                        <div className="mt-1 space-y-1">
+                          {selectedConversation.contact.handles.wa_id && (
+                            <div className="text-xs text-muted-foreground">
+                              WhatsApp: {selectedConversation.contact.handles.wa_id}
+                            </div>
+                          )}
+                          {selectedConversation.contact.handles.ig_id && (
+                            <div className="text-xs text-muted-foreground">
+                              Instagram: {selectedConversation.contact.handles.ig_id}
+                            </div>
+                          )}
+                          {selectedConversation.contact.handles.fb_psid && (
+                            <div className="text-xs text-muted-foreground">
+                              Facebook: {selectedConversation.contact.handles.fb_psid}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="p-4 border-b flex items-center justify-between">
               <div>
-                <h2 className="font-semibold">{selectedConversation.contact.primaryName}</h2>
-                <p className="text-sm text-muted-foreground">
-                  {selectedConversation.channelAccount.displayName}
+                <h2 className="font-semibold">
+                  {selectedConversation.contact.primaryName}
+                </h2>
+                <p className="text-sm text-muted-foreground flex items-center gap-1.5">
+                  <span
+                    className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-xs ${getChannelColor(
+                      selectedConversation.channelAccount.type
+                    )}`}
+                  >
+                    {getChannelIcon(selectedConversation.channelAccount.type)}
+                  </span>
+                  <span>
+                    {selectedConversation.channelAccount.type === "whatsapp_evolution"
+                      ? "WhatsApp"
+                      : selectedConversation.channelAccount.type === "facebook_page"
+                      ? "Facebook"
+                      : selectedConversation.channelAccount.type === "instagram_business"
+                      ? "Instagram"
+                      : "Unknown"}
+                  </span>
                 </p>
               </div>
               <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowProfilePanel(!showProfilePanel)}
+                >
+                  👤 Profile
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -436,9 +691,46 @@ export default function InboxPage() {
                 </Button>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div
+              ref={messagesContainerRef}
+              className={`flex-1 overflow-y-auto p-4 space-y-4 ${showProfilePanel ? "mr-80" : ""}`}
+              onScroll={(e) => {
+                const container = e.currentTarget
+                const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+                
+                // Clear any pending scroll timeout
+                if (scrollTimeoutRef.current) {
+                  clearTimeout(scrollTimeoutRef.current)
+                }
+                
+                // If user scrolled up (more than 50px from bottom), mark as manually scrolling
+                if (distanceFromBottom > 50) {
+                  isUserScrollingRef.current = true
+                  
+                  // Keep the flag true for 5 seconds after user stops scrolling
+                  scrollTimeoutRef.current = setTimeout(() => {
+                    isUserScrollingRef.current = false
+                  }, 5000)
+                } else {
+                  // User scrolled back to bottom, allow auto-scroll immediately
+                  isUserScrollingRef.current = false
+                  if (scrollTimeoutRef.current) {
+                    clearTimeout(scrollTimeoutRef.current)
+                    scrollTimeoutRef.current = null
+                  }
+                }
+              }}
+            >
               {messages.map((msg) => {
                 const mediaUrl = msg.rawPayload?.mediaUrl as string | undefined
+                // Debug: Log media messages
+                if (msg.messageType !== "text" && !mediaUrl) {
+                  console.warn("Media message without URL:", {
+                    id: msg.id,
+                    messageType: msg.messageType,
+                    rawPayload: msg.rawPayload,
+                  })
+                }
                 return (
                   <div
                     key={msg.id}
@@ -454,38 +746,57 @@ export default function InboxPage() {
                       }`}
                     >
                       {/* Media Content */}
-                      {msg.messageType === "image" && mediaUrl && (
+                      {msg.messageType === "image" && (
                         <div className="mb-2">
-                          <img
-                            src={mediaUrl}
-                            alt="Image"
-                            className="max-w-full rounded-md"
-                            onError={(e) => {
-                              // Fallback if image fails to load
-                              e.currentTarget.style.display = "none"
-                            }}
-                          />
+                          {mediaUrl ? (
+                            <img
+                              src={mediaUrl}
+                              alt="Image"
+                              className="max-w-full rounded-md"
+                              onError={(e) => {
+                                console.error("Failed to load image:", mediaUrl)
+                                e.currentTarget.style.display = "none"
+                              }}
+                            />
+                          ) : (
+                            <div className="p-4 bg-muted rounded-md text-center text-sm text-muted-foreground">
+                              📷 Image (URL not available)
+                            </div>
+                          )}
                         </div>
                       )}
-                      {msg.messageType === "video" && mediaUrl && (
+                      {msg.messageType === "video" && (
                         <div className="mb-2">
-                          <video
-                            src={mediaUrl}
-                            controls
-                            className="max-w-full rounded-md"
-                            onError={(e) => {
-                              e.currentTarget.style.display = "none"
-                            }}
-                          >
-                            Your browser does not support the video tag.
-                          </video>
+                          {mediaUrl ? (
+                            <video
+                              src={mediaUrl}
+                              controls
+                              className="max-w-full rounded-md"
+                              onError={(e) => {
+                                console.error("Failed to load video:", mediaUrl)
+                                e.currentTarget.style.display = "none"
+                              }}
+                            >
+                              Your browser does not support the video tag.
+                            </video>
+                          ) : (
+                            <div className="p-4 bg-muted rounded-md text-center text-sm text-muted-foreground">
+                              🎥 Video (URL not available)
+                            </div>
+                          )}
                         </div>
                       )}
-                      {msg.messageType === "audio" && mediaUrl && (
+                      {msg.messageType === "audio" && (
                         <div className="mb-2">
-                          <audio src={mediaUrl} controls className="w-full">
-                            Your browser does not support the audio tag.
-                          </audio>
+                          {mediaUrl ? (
+                            <audio src={mediaUrl} controls className="w-full">
+                              Your browser does not support the audio tag.
+                            </audio>
+                          ) : (
+                            <div className="p-4 bg-muted rounded-md text-center text-sm text-muted-foreground">
+                              🎵 Audio (URL not available)
+                            </div>
+                          )}
                         </div>
                       )}
                       {/* Text Content */}

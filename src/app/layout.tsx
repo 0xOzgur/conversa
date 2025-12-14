@@ -5,7 +5,7 @@ import "./globals.css"
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "Unified Inbox",
+  title: "Conversa",
   description: "Manage customer communication from multiple channels",
 }
 

@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
               id: true,
               primaryName: true,
               avatarUrl: true,
+              handles: true,
             },
           },
           channelAccount: {

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { Sidebar } from "@/components/sidebar"
+import Image from "next/image"
 
 export default async function AppLayout({
   children,
@@ -17,7 +18,14 @@ export default async function AppLayout({
     <div className="min-h-screen bg-background">
       <nav className="border-b">
         <div className="container mx-auto px-4 py-3 flex items-center justify-between">
-          <h1 className="text-xl font-semibold">Unified Inbox</h1>
+          <Image
+            src="/conversa-logo.png"
+            alt="Conversa"
+            width={120}
+            height={32}
+            className="h-8 w-auto"
+            unoptimized
+          />
           <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">{session.user.email}</span>
             <a
