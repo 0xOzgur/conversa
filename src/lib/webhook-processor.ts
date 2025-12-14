@@ -85,14 +85,15 @@ export async function processInboundEvent(
     const updatedHandles = { ...existingHandles, ...handles }
     
     const shouldUpdate = 
-      (event.contactName && event.contactName !== contactRecord.primaryName) ||
+      (event.contactName && event.contactName !== contactRecord.primaryName && event.direction === "inbound") ||
       JSON.stringify(updatedHandles) !== JSON.stringify(existingHandles)
 
     if (shouldUpdate) {
       contactRecord = await prisma.contact.update({
         where: { id: contactRecord.id },
         data: {
-          primaryName: event.contactName || contactRecord.primaryName,
+          // Only update name from inbound messages (outbound messages have "Você" as pushName)
+          primaryName: (event.contactName && event.direction === "inbound") ? event.contactName : contactRecord.primaryName,
           handles: updatedHandles,
           updatedAt: new Date(),
         },

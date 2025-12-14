@@ -161,8 +161,12 @@ export default function InboxPage() {
       // Handle message update (e.g., when mediaUrl is added to outbound message)
       if (data.type === "message_updated" && data.message && data.conversationId) {
         const current = selectedConversationRef.current
+        // Reload conversations to update last message preview
+        if (loadConvs) {
+          loadConvs()
+        }
+        // Reload messages if this conversation is selected
         if (current && current.id === data.conversationId && loadMsgs) {
-          // Reload messages to get updated mediaUrl
           loadMsgs(data.conversationId).then(() => {
             if (!isUserScrollingRef.current) {
               setTimeout(() => {
@@ -173,10 +177,33 @@ export default function InboxPage() {
             }
           })
         }
-        return // Don't reload conversations for message updates
+        return
       }
 
-      // Always reload conversations on any SSE event (fallback for missing type)
+      // Handle new message event
+      if (data.type === "new_message" && data.conversationId) {
+        // Reload conversations to show new message in list
+        if (loadConvs) {
+          loadConvs().then(() => {
+            // If this conversation is selected, reload messages
+            const current = selectedConversationRef.current
+            if (current && current.id === data.conversationId && loadMsgs) {
+              loadMsgs(data.conversationId).then(() => {
+                if (!isUserScrollingRef.current) {
+                  setTimeout(() => {
+                    if (!isUserScrollingRef.current) {
+                      scrollToBottom()
+                    }
+                  }, 200)
+                }
+              })
+            }
+          })
+        }
+        return
+      }
+
+      // Fallback: Always reload conversations on any SSE event
       if (loadConvs) {
         loadConvs().then(() => {
           // If we have a conversationId and it matches the selected conversation, reload messages

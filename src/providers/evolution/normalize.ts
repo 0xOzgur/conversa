@@ -137,11 +137,15 @@ export function normalizeEvolutionWebhook(
   // Extract message ID
   const externalMessageId = key.id || `${timestamp.getTime()}-${Math.random()}`
 
+  // Only use pushName for inbound messages
+  // For outbound messages, pushName is "Você" (our own number) and shouldn't be used as contact name
+  const contactName = direction === "inbound" ? (data.pushName || undefined) : undefined
+
   return {
     channelType: "whatsapp_evolution",
     channelExternalId,
     contactExternalId: contactExternalId || altContactExternalId || remoteJid.split("@")[0],
-    contactName: data.pushName || undefined,
+    contactName,
     eventType: "message",
     direction, // Added to support outbound messages
     message: {
