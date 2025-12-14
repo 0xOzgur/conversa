@@ -1,0 +1,146 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  workspaceMembers WorkspaceMember[]
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  members         WorkspaceMember[]
+  channelAccounts ChannelAccount[]
+  contacts        Contact[]
+  conversations   Conversation[]
+  messages        Message[]
+  webhookEvents   WebhookEvent[]
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        String   // "owner" | "admin" | "agent"
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+}
+
+model ChannelAccount {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  type            String   // "facebook_page" | "instagram_business" | "whatsapp_evolution"
+  externalId      String   // Evolution instance name or phone number identifier
+  displayName     String
+  metadata        Json     // baseUrl, instanceName, webhookVersion, etc.
+  encryptedApiKey String?  // Encrypted API key (nullable for Meta channels)
+  createdAt       DateTime @default(now())
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+
+  @@unique([workspaceId, type, externalId])
+  @@index([workspaceId])
+  @@index([type])
+}
+
+model Contact {
+  id          String   @id @default(cuid())
+  workspaceId String
+  primaryName String
+  handles     Json     // { wa_id, ig_id, fb_psid }
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+
+  @@index([workspaceId])
+}
+
+model Conversation {
+  id             String   @id @default(cuid())
+  workspaceId    String
+  channelAccountId String
+  contactId      String
+  status         String   @default("open") // "open" | "pending" | "closed"
+  lastMessageAt  DateTime @default(now())
+  unreadCount    Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  workspace      Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channelAccount ChannelAccount @relation(fields: [channelAccountId], references: [id], onDelete: Cascade)
+  contact        Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  messages       Message[]
+
+  @@unique([workspaceId, channelAccountId, contactId])
+  @@index([workspaceId])
+  @@index([channelAccountId])
+  @@index([contactId])
+  @@index([status])
+  @@index([lastMessageAt])
+}
+
+model Message {
+  id               String   @id @default(cuid())
+  workspaceId      String
+  conversationId   String
+  direction        String   // "inbound" | "outbound"
+  messageType      String   // "text" | "image" | "audio" | "system" | "comment"
+  body             String?
+  externalMessageId String?
+  sentAt           DateTime?
+  receivedAt       DateTime?
+  rawPayload       Json
+  createdAt        DateTime @default(now())
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([conversationId])
+  @@index([externalMessageId])
+  @@index([createdAt])
+}
+
+model WebhookEvent {
+  id          String    @id @default(cuid())
+  workspaceId String?
+  provider    String    // "meta" | "evolution"
+  dedupeKey   String    @unique
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  rawPayload  Json
+  error       String?
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([provider])
+  @@index([dedupeKey])
+  @@index([processedAt])
+}
+
