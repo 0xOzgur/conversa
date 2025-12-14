@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation"
 import { auth } from "@/auth"
+import { Sidebar } from "@/components/sidebar"
 
 export default async function AppLayout({
   children,
@@ -28,7 +29,12 @@ export default async function AppLayout({
           </div>
         </div>
       </nav>
-      {children}
+      <div className="flex h-[calc(100vh-64px)]">
+        <Sidebar />
+        <div className="flex-1 overflow-auto">
+          {children}
+        </div>
+      </div>
     </div>
   )
 }

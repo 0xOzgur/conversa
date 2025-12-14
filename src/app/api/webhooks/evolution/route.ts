@@ -23,7 +23,14 @@ const evolutionWebhookSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    // Log request details for debugging
+    console.log("=== Evolution Webhook Received ===")
+    console.log("URL:", req.url)
+    console.log("Method:", req.method)
+    console.log("Headers:", Object.fromEntries(req.headers.entries()))
+    
     const body = await req.json()
+    console.log("Body:", JSON.stringify(body, null, 2))
     
     // Validate payload
     const validated = evolutionWebhookSchema.parse(body)
@@ -39,22 +46,25 @@ export async function POST(req: NextRequest) {
     }
 
     // Find channel account by instance name
+    // externalId is the instanceName in our schema
     const channelAccount = await prisma.channelAccount.findFirst({
       where: {
         type: "whatsapp_evolution",
         externalId: instanceName,
-        metadata: {
-          path: ["instanceName"],
-          equals: instanceName,
-        },
       },
     })
 
     if (!channelAccount) {
       // Still log the webhook but don't process
       console.warn(`Channel account not found for instance: ${instanceName}`)
-      return NextResponse.json({ received: true }, { status: 200 })
+      console.log("Available channels:", await prisma.channelAccount.findMany({
+        where: { type: "whatsapp_evolution" },
+        select: { externalId: true, displayName: true }
+      }))
+      return NextResponse.json({ received: true, error: "Channel not found" }, { status: 200 })
     }
+
+    console.log(`Processing webhook for instance: ${instanceName}, channel: ${channelAccount.id}`)
 
     // Normalize webhook
     const normalized = evolutionProvider.normalizeWebhook(
@@ -64,8 +74,11 @@ export async function POST(req: NextRequest) {
 
     if (!normalized) {
       // Not a message event we care about
-      return NextResponse.json({ received: true }, { status: 200 })
+      console.log(`Event ${payload.event} not normalized (not a message event we care about)`)
+      return NextResponse.json({ received: true, skipped: true }, { status: 200 })
     }
+
+    console.log("Normalized event:", JSON.stringify(normalized, null, 2))
 
     // Generate dedupe key
     const messageId = normalized.message.externalMessageId
@@ -103,11 +116,35 @@ export async function POST(req: NextRequest) {
         data: { processedAt: new Date() },
       })
 
-      // Broadcast via SSE
-      sseBroadcaster.broadcast(channelAccount.workspaceId, "message", {
-        type: "new_message",
-        channelAccountId: channelAccount.id,
+      // Get the conversation ID for SSE broadcast
+      // Find contact by searching all contacts (since handles is JSON)
+      const allContacts = await prisma.contact.findMany({
+        where: { workspaceId: channelAccount.workspaceId },
       })
+      
+      const contact = allContacts.find((c) => {
+        const handles = c.handles as { wa_id?: string }
+        return handles.wa_id === normalized.contactExternalId
+      })
+
+      if (contact) {
+        const conversation = await prisma.conversation.findFirst({
+          where: {
+            workspaceId: channelAccount.workspaceId,
+            channelAccountId: channelAccount.id,
+            contactId: contact.id,
+          },
+        })
+
+        if (conversation) {
+          // Broadcast via SSE
+          sseBroadcaster.broadcast(channelAccount.workspaceId, "message", {
+            type: "new_message",
+            conversationId: conversation.id,
+            channelAccountId: channelAccount.id,
+          })
+        }
+      }
 
       return NextResponse.json({ received: true, processed: true }, { status: 200 })
     } catch (error) {

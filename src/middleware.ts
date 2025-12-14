@@ -7,7 +7,7 @@ export default auth((req) => {
   const isLoggedIn = !!req.auth
 
   // Public routes
-  if (pathname === "/login" || pathname.startsWith("/api/auth")) {
+  if (pathname === "/login" || pathname.startsWith("/api/auth") || pathname.startsWith("/api/webhooks")) {
     if (isLoggedIn && pathname === "/login") {
       return NextResponse.redirect(new URL("/app/inbox", req.url))
     }
