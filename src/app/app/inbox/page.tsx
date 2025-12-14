@@ -68,6 +68,7 @@ export default function InboxPage() {
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const loadConversationsRef = useRef<() => Promise<Conversation[]>>()
   const loadMessagesRef = useRef<(id: string) => Promise<Message[]>>()
+  const emojiPickerRef = useRef<HTMLDivElement>(null)
   const filterStatusRef = useRef<"all" | "unread" | "archived">("all")
   const searchQueryRef = useRef<string>("")
 
@@ -257,6 +258,30 @@ export default function InboxPage() {
   useEffect(() => {
     selectedConversationRef.current = selectedConversation
   }, [selectedConversation])
+
+  // Close emoji picker when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        emojiPickerRef.current &&
+        !emojiPickerRef.current.contains(event.target as Node) &&
+        showEmojiPicker
+      ) {
+        setShowEmojiPicker(false)
+      }
+    }
+
+    if (showEmojiPicker) {
+      // Use setTimeout to avoid immediate closure when clicking the button
+      setTimeout(() => {
+        document.addEventListener("mousedown", handleClickOutside)
+      }, 0)
+    }
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside)
+    }
+  }, [showEmojiPicker])
 
   // Load messages when conversation is selected
   useEffect(() => {
@@ -1032,22 +1057,25 @@ export default function InboxPage() {
                     </span>
                   )}
                 </div>
-                <div className="relative">
+                <div className="relative" ref={emojiPickerRef}>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => setShowEmojiPicker((prev) => !prev)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setShowEmojiPicker((prev) => !prev)
+                    }}
                   >
                     😊
                   </Button>
                   {showEmojiPicker && (
-                    <div className="absolute bottom-12 left-0 bg-popover border rounded shadow p-2 grid grid-cols-6 gap-1 z-10">
+                    <div className="absolute bottom-12 left-0 bg-popover border rounded shadow-lg p-3 grid grid-cols-6 gap-2 z-10 w-48">
                       {["😀","😃","😄","😁","😆","😅","😂","😊","😍","🤔","👍","🙏","🎉","🔥","❤️","👏"].map((emoji) => (
                         <button
                           key={emoji}
                           type="button"
-                          className="text-lg"
+                          className="text-xl hover:bg-accent hover:text-accent-foreground rounded p-1.5 transition-colors flex items-center justify-center aspect-square"
                           onClick={() => {
                             setMessageText((prev) => prev + emoji)
                             setShowEmojiPicker(false)
