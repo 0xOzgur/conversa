@@ -1,6 +1,7 @@
 import { prisma } from "./prisma"
 import type { CanonicalInboundEvent } from "@/types"
 import type { ContactHandles } from "@/types"
+import { sseBroadcaster } from "./sse-broadcaster"
 
 /**
  * Generate deduplication key for webhook event
@@ -151,7 +152,46 @@ export async function processInboundEvent(
     rawPayload.mediaUrl = event.message.mediaUrl
   }
 
-  // Insert message
+  // For outbound messages, check if message already exists (from /api/messages/send)
+  // and update it with mediaUrl if available
+  if (event.direction === "outbound") {
+    const existingMessage = await prisma.message.findFirst({
+      where: {
+        workspaceId,
+        conversationId: conversation.id,
+        externalMessageId: event.message.externalMessageId,
+        direction: "outbound",
+      },
+    })
+
+    if (existingMessage) {
+      // Update existing message with mediaUrl from webhook
+      const updatedRawPayload = existingMessage.rawPayload as Record<string, unknown> || {}
+      if (event.message.mediaUrl) {
+        updatedRawPayload.mediaUrl = event.message.mediaUrl
+      }
+      
+      const updatedMessage = await prisma.message.update({
+        where: { id: existingMessage.id },
+        data: {
+          messageType: messageType !== "text" ? messageType : existingMessage.messageType,
+          body: event.message.text || existingMessage.body,
+          rawPayload: updatedRawPayload,
+        },
+      })
+      
+      // Broadcast update via SSE so frontend can refresh
+      sseBroadcaster.broadcast(workspaceId, "message", {
+        type: "message_updated",
+        conversationId: conversation.id,
+        message: updatedMessage,
+      })
+      
+      return // Don't create duplicate message
+    }
+  }
+
+  // Insert message (for inbound or new outbound messages)
   await prisma.message.create({
     data: {
       workspaceId,

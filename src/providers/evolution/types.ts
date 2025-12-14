@@ -64,3 +64,28 @@ export interface EvolutionSendTextResponse {
   status: string
 }
 
+export interface EvolutionSendMediaPayload {
+  number: string
+  mediatype: "image" | "video" | "audio" | "document"
+  mimetype: string
+  media: string // Base64 or URL
+  fileName: string
+  caption?: string
+}
+
+export interface EvolutionSendMediaResponse {
+  key: {
+    remoteJid: string
+    fromMe: boolean
+    id: string
+  }
+  message: {
+    imageMessage?: any
+    videoMessage?: any
+    audioMessage?: any
+    documentMessage?: any
+  }
+  messageTimestamp: number
+  status: string
+}
+

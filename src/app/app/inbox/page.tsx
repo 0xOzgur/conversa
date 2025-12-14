@@ -53,6 +53,9 @@ export default function InboxPage() {
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [messageText, setMessageText] = useState("")
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const lastMarkedReadRef = useRef<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [filterStatus, setFilterStatus] = useState<"all" | "unread" | "archived">("all")
@@ -62,7 +65,6 @@ export default function InboxPage() {
   const lastMessageIdRef = useRef<string | null>(null)
   const selectedConversationRef = useRef<Conversation | null>(null)
   const isUserScrollingRef = useRef(false)
-  const shouldAutoScrollRef = useRef(false)
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const loadConversationsRef = useRef<() => Promise<Conversation[]>>()
   const loadMessagesRef = useRef<(id: string) => Promise<Message[]>>()
@@ -82,6 +84,9 @@ export default function InboxPage() {
       filtered = filtered.filter((c) => c.unreadCount > 0)
     } else if (status === "archived") {
       filtered = filtered.filter((c) => c.status === "closed")
+    } else if (status === "all") {
+      // "All" is now "Active" - exclude archived conversations
+      filtered = filtered.filter((c) => c.status !== "closed")
     }
 
     // Apply search filter
@@ -145,39 +150,70 @@ export default function InboxPage() {
       console.error("[SSE] Connection error:", error)
     }
 
-    const handleMessage = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data)
-        
-        if (data.type === "new_message") {
-          // Use refs to get latest function references (always up-to-date)
-          const loadConvs = loadConversationsRef.current
-          const loadMsgs = loadMessagesRef.current
-          
-          if (!loadConvs) {
-            console.warn("loadConversations ref not available yet")
-            return
-          }
-          
-          // Always reload conversations to get latest updates
-          loadConvs().then(() => {
-            // If we have a conversationId and it matches the selected conversation, reload messages
-            if (data.conversationId && loadMsgs) {
-              // Check if this is the currently selected conversation using ref (always up-to-date)
-              const current = selectedConversationRef.current
-              if (current && current.id === data.conversationId) {
-                // Reload messages for the selected conversation
-                // Mark that we should auto-scroll when messages are loaded
-                shouldAutoScrollRef.current = true
-                loadMsgs(data.conversationId)
-              }
+  const handleMessage = (event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data)
+      
+      const loadConvs = loadConversationsRef.current
+      const loadMsgs = loadMessagesRef.current
+
+      // Handle message update (e.g., when mediaUrl is added to outbound message)
+      if (data.type === "message_updated" && data.message && data.conversationId) {
+        const current = selectedConversationRef.current
+        if (current && current.id === data.conversationId && loadMsgs) {
+          // Reload messages to get updated mediaUrl
+          loadMsgs(data.conversationId).then(() => {
+            if (!isUserScrollingRef.current) {
+              setTimeout(() => {
+                if (!isUserScrollingRef.current) {
+                  scrollToBottom()
+                }
+              }, 200)
             }
           })
         }
-      } catch (error) {
-        console.error("Error parsing SSE event:", error)
+        return // Don't reload conversations for message updates
       }
+
+      // Always reload conversations on any SSE event (fallback for missing type)
+      if (loadConvs) {
+        loadConvs().then(() => {
+          // If we have a conversationId and it matches the selected conversation, reload messages
+          if (data.conversationId && loadMsgs) {
+            const current = selectedConversationRef.current
+            if (current && current.id === data.conversationId) {
+              loadMsgs(data.conversationId).then(() => {
+                if (!isUserScrollingRef.current) {
+                  setTimeout(() => {
+                    if (!isUserScrollingRef.current) {
+                      scrollToBottom()
+                    }
+                  }, 200)
+                }
+              })
+            }
+          }
+        })
+      }
+
+      if (data.type === "conversation_deleted") {
+        // Reload conversations to remove deleted conversation
+        const loadConvs = loadConversationsRef.current
+        if (loadConvs) {
+          loadConvs().then(() => {
+            // If the deleted conversation was selected, clear selection
+            const current = selectedConversationRef.current
+            if (current && current.id === data.conversationId) {
+              setSelectedConversation(null)
+              setMessages([])
+            }
+          })
+        }
+      }
+    } catch (error) {
+      console.error("Error parsing SSE event:", error)
     }
+  }
 
     // Listen for the custom "message" event type
     eventSource.addEventListener("message", handleMessage)
@@ -211,15 +247,11 @@ export default function InboxPage() {
     loadConversations()
   }, [loadConversations])
 
-  // Setup SSE connection (only once, not on conversation change)
-  // Wait for refs to be initialized
+  // Setup SSE connection (only once). Refs are updated separately.
   useEffect(() => {
-    // Ensure refs are set before setting up SSE
-    if (loadConversationsRef.current && loadMessagesRef.current) {
-      const cleanup = setupSSE()
-      return cleanup
-    }
-  }, [loadConversations, loadMessages, setupSSE])
+    const cleanup = setupSSE()
+    return cleanup
+  }, [setupSSE])
 
   // Update ref when selectedConversation changes
   useEffect(() => {
@@ -231,51 +263,23 @@ export default function InboxPage() {
     if (selectedConversation) {
       // Reset last message ID when switching conversations
       lastMessageIdRef.current = null
+      // Reset last marked read guard when switching conversation
+      lastMarkedReadRef.current = null
+      isUserScrollingRef.current = false
       loadMessages(selectedConversation.id).then(() => {
         // Scroll to bottom when conversation is first loaded
         setTimeout(() => {
           scrollToBottom()
-        }, 100)
+        }, 200)
       })
       // Mark as read
-      markAsRead(selectedConversation.id)
+      if (selectedConversation.unreadCount > 0) {
+        markAsRead(selectedConversation.id)
+        lastMarkedReadRef.current = selectedConversation.id
+      }
     }
   }, [selectedConversation, loadMessages])
 
-  // Auto-scroll to bottom ONLY when explicitly requested (new message or first load)
-  useEffect(() => {
-    if (messages.length > 0) {
-      const lastMessage = messages[messages.length - 1]
-      const previousLastId = lastMessageIdRef.current
-      
-      // Only process if it's a new message
-      if (lastMessage.id !== previousLastId) {
-        lastMessageIdRef.current = lastMessage.id
-        
-        // Only auto-scroll if:
-        // 1. First load (conversation just opened), OR
-        // 2. Explicitly requested (new message via SSE or sent) AND user is not manually scrolling
-        const isFirstLoad = previousLastId === null
-        const shouldScroll = isFirstLoad || (shouldAutoScrollRef.current && !isUserScrollingRef.current)
-        
-        if (shouldScroll) {
-          // Reset the flag immediately
-          shouldAutoScrollRef.current = false
-          
-          // Scroll after DOM update
-          setTimeout(() => {
-            // Final check: only scroll if user is not manually scrolling
-            if (!isUserScrollingRef.current) {
-              scrollToBottom()
-            }
-          }, 150)
-        } else {
-          // Reset flag even if we don't scroll
-          shouldAutoScrollRef.current = false
-        }
-      }
-    }
-  }, [messages])
 
   // Apply filters when conversations, filterStatus, or searchQuery changes
   useEffect(() => {
@@ -285,34 +289,137 @@ export default function InboxPage() {
 
   const markAsRead = async (conversationId: string) => {
     try {
-      await fetch(`/api/conversations/${conversationId}`, {
+      const res = await fetch(`/api/conversations/${conversationId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ unreadCount: 0 }),
       })
-      // Update conversations list but don't trigger full reload to avoid loops
-      loadConversations()
+      if (!res.ok) {
+        if (res.status === 404) {
+          // Conversation no longer exists; clear selection and refresh list
+          setConversations((prev) => prev.filter((c) => c.id !== conversationId))
+          setSelectedConversation((prev) =>
+            prev && prev.id === conversationId ? null : prev
+          )
+        }
+        return
+      }
+      // Optimistic update
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === conversationId ? { ...c, unreadCount: 0 } : c
+        )
+      )
+      setSelectedConversation((prev) =>
+        prev && prev.id === conversationId ? { ...prev, unreadCount: 0 } : prev
+      )
     } catch (error) {
       console.error("Error marking as read:", error)
     }
   }
 
+  const markAsUnread = async (conversationId: string) => {
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unreadCount: 1 }),
+      })
+      if (!res.ok) {
+        if (res.status === 404) {
+          setConversations((prev) => prev.filter((c) => c.id !== conversationId))
+          setSelectedConversation((prev) =>
+            prev && prev.id === conversationId ? null : prev
+          )
+        }
+        return
+      }
+      // Optimistic update
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === conversationId ? { ...c, unreadCount: 1 } : c
+        )
+      )
+      setSelectedConversation((prev) =>
+        prev && prev.id === conversationId ? { ...prev, unreadCount: 1 } : prev
+      )
+    } catch (error) {
+      console.error("Error marking as unread:", error)
+    }
+  }
+
   const sendMessage = async () => {
-    if (!selectedConversation || !messageText.trim()) return
+    if (!selectedConversation || (!messageText.trim() && !selectedFile)) return
 
     setLoading(true)
     try {
+      let payload: any = {
+        conversationId: selectedConversation.id,
+      }
+
+      // If file is selected, convert to base64 and send as media
+      if (selectedFile) {
+        const fileBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => {
+            try {
+              // Read as ArrayBuffer for more reliable base64 conversion
+              const arrayBuffer = reader.result as ArrayBuffer
+              const bytes = new Uint8Array(arrayBuffer)
+              
+              // Convert to base64 using binary string method
+              let binary = ""
+              for (let i = 0; i < bytes.length; i++) {
+                binary += String.fromCharCode(bytes[i])
+              }
+              const base64 = btoa(binary)
+              resolve(base64)
+            } catch (error) {
+              // Fallback to data URL method if ArrayBuffer fails
+              const result = reader.result as string
+              let base64 = result.includes(",") ? result.split(",")[1] : result
+              base64 = base64.replace(/\s/g, "")
+              resolve(base64)
+            }
+          }
+          reader.onerror = reject
+          // Read as ArrayBuffer instead of DataURL for more reliable conversion
+          reader.readAsArrayBuffer(selectedFile)
+        })
+
+        // Determine media type from file
+        const mimeType = selectedFile.type || "application/octet-stream"
+        let mediaType: "image" | "video" | "audio" | "document" = "document"
+        if (mimeType.startsWith("image/")) {
+          mediaType = "image"
+        } else if (mimeType.startsWith("video/")) {
+          mediaType = "video"
+        } else if (mimeType.startsWith("audio/")) {
+          mediaType = "audio"
+        }
+
+        payload = {
+          ...payload,
+          mediaBase64: fileBase64,
+          fileName: selectedFile.name,
+          mimeType,
+          mediaType,
+          text: messageText.trim() || undefined, // Caption if provided
+        }
+      } else {
+        // Text only message
+        payload.text = messageText.trim()
+      }
+
       const res = await fetch("/api/messages/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          conversationId: selectedConversation.id,
-          text: messageText,
-        }),
+        body: JSON.stringify(payload),
       })
 
       if (res.ok) {
         setMessageText("")
+        setSelectedFile(null)
         loadConversations()
         
         // Reset lastMessageIdRef so auto-scroll will trigger when new message arrives
@@ -320,9 +427,15 @@ export default function InboxPage() {
         
         // Wait a bit for webhook to process, then reload messages and scroll
         setTimeout(() => {
-          // Mark that we should auto-scroll when messages are loaded
-          shouldAutoScrollRef.current = true
-          loadMessages(selectedConversation.id)
+          loadMessages(selectedConversation.id).then(() => {
+            if (!isUserScrollingRef.current) {
+              setTimeout(() => {
+                if (!isUserScrollingRef.current) {
+                  scrollToBottom()
+                }
+              }, 200)
+            }
+          })
         }, 500)
       }
     } catch (error) {
@@ -375,6 +488,29 @@ export default function InboxPage() {
     }
   }
 
+  const getMessageStatusDisplay = (msg: Message) => {
+    // Only show ticks for outbound messages
+    if (msg.direction !== "outbound") return null
+
+    const raw = msg.rawPayload as any
+    const status = raw?.status || raw?.data?.status || raw?.messageStatus
+
+    if (status && typeof status === "string") {
+      const s = status.toLowerCase()
+      if (s.includes("read")) {
+        return { icon: "✓✓", className: "text-sky-500", label: "Read" }
+      }
+      if (s.includes("delivery") || s.includes("delivered") || s.includes("server")) {
+        return { icon: "✓✓", className: "text-muted-foreground", label: "Delivered" }
+      }
+      if (s.includes("pending")) {
+        return { icon: "✓", className: "text-muted-foreground", label: "Pending" }
+      }
+    }
+
+    return { icon: "✓", className: "text-muted-foreground", label: "Sent" }
+  }
+
   return (
     <div className="flex h-full">
       {/* Conversation List */}
@@ -400,7 +536,7 @@ export default function InboxPage() {
               size="sm"
               onClick={() => setFilterStatus("all")}
             >
-              All
+              Active
             </Button>
             <Button
               variant={filterStatus === "unread" ? "default" : "outline"}
@@ -689,6 +825,34 @@ export default function InboxPage() {
                 >
                   {selectedConversation.status === "closed" ? "Unarchive" : "Archive"}
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const run = async () => {
+                      try {
+                        if (selectedConversation.status === "closed") {
+                          // If archived, unarchive then mark unread
+                          await fetch(`/api/conversations/${selectedConversation.id}`, {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ status: "open" }),
+                          })
+                          await markAsUnread(selectedConversation.id)
+                        } else if (selectedConversation.unreadCount > 0) {
+                          await markAsRead(selectedConversation.id)
+                        } else {
+                          await markAsUnread(selectedConversation.id)
+                        }
+                      } catch (err) {
+                        console.error("Error toggling read/unread:", err)
+                      }
+                    }
+                    run()
+                  }}
+                >
+                  {selectedConversation.unreadCount > 0 ? "Mark Read" : "Mark Unread"}
+                </Button>
               </div>
             </div>
             <div
@@ -701,30 +865,28 @@ export default function InboxPage() {
                 // Clear any pending scroll timeout
                 if (scrollTimeoutRef.current) {
                   clearTimeout(scrollTimeoutRef.current)
+                  scrollTimeoutRef.current = null
                 }
                 
-                // If user scrolled up (more than 50px from bottom), mark as manually scrolling
-                if (distanceFromBottom > 50) {
+                // If user scrolled up (more than 100px from bottom), mark as manually scrolling
+                if (distanceFromBottom > 100) {
                   isUserScrollingRef.current = true
                   
-                  // Keep the flag true for 5 seconds after user stops scrolling
+                  // Keep the flag true for 10 seconds after user stops scrolling
                   scrollTimeoutRef.current = setTimeout(() => {
                     isUserScrollingRef.current = false
-                  }, 5000)
+                    scrollTimeoutRef.current = null
+                  }, 10000)
                 } else {
                   // User scrolled back to bottom, allow auto-scroll immediately
                   isUserScrollingRef.current = false
-                  if (scrollTimeoutRef.current) {
-                    clearTimeout(scrollTimeoutRef.current)
-                    scrollTimeoutRef.current = null
-                  }
                 }
               }}
             >
               {messages.map((msg) => {
                 const mediaUrl = msg.rawPayload?.mediaUrl as string | undefined
-                // Debug: Log media messages
-                if (msg.messageType !== "text" && !mediaUrl) {
+                // Debug: Log media messages only for inbound (outbound messages may not have URL immediately)
+                if (msg.messageType !== "text" && !mediaUrl && msg.direction === "inbound") {
                   console.warn("Media message without URL:", {
                     id: msg.id,
                     messageType: msg.messageType,
@@ -759,8 +921,12 @@ export default function InboxPage() {
                               }}
                             />
                           ) : (
-                            <div className="p-4 bg-muted rounded-md text-center text-sm text-muted-foreground">
-                              📷 Image (URL not available)
+                            <div className={`p-4 rounded-md text-center text-sm ${
+                              msg.direction === "outbound" 
+                                ? "bg-primary-foreground/20 text-primary-foreground/80" 
+                                : "bg-muted text-muted-foreground"
+                            }`}>
+                              {msg.direction === "outbound" ? "📷 Image sent" : "📷 Image (URL not available)"}
                             </div>
                           )}
                         </div>
@@ -780,8 +946,12 @@ export default function InboxPage() {
                               Your browser does not support the video tag.
                             </video>
                           ) : (
-                            <div className="p-4 bg-muted rounded-md text-center text-sm text-muted-foreground">
-                              🎥 Video (URL not available)
+                            <div className={`p-4 rounded-md text-center text-sm ${
+                              msg.direction === "outbound" 
+                                ? "bg-primary-foreground/20 text-primary-foreground/80" 
+                                : "bg-muted text-muted-foreground"
+                            }`}>
+                              {msg.direction === "outbound" ? "🎥 Video sent" : "🎥 Video (URL not available)"}
                             </div>
                           )}
                         </div>
@@ -793,8 +963,12 @@ export default function InboxPage() {
                               Your browser does not support the audio tag.
                             </audio>
                           ) : (
-                            <div className="p-4 bg-muted rounded-md text-center text-sm text-muted-foreground">
-                              🎵 Audio (URL not available)
+                            <div className={`p-4 rounded-md text-center text-sm ${
+                              msg.direction === "outbound" 
+                                ? "bg-primary-foreground/20 text-primary-foreground/80" 
+                                : "bg-muted text-muted-foreground"
+                            }`}>
+                              {msg.direction === "outbound" ? "🎵 Audio sent" : "🎵 Audio (URL not available)"}
                             </div>
                           )}
                         </div>
@@ -810,7 +984,18 @@ export default function InboxPage() {
                             : "text-muted-foreground"
                         }`}
                       >
-                        {formatTime(msg.createdAt)}
+                        <div className="flex items-center gap-1">
+                          {formatTime(msg.createdAt)}
+                          {msg.direction === "outbound" && (() => {
+                            const status = getMessageStatusDisplay(msg)
+                            if (!status) return null
+                            return (
+                              <span className={`text-[11px] ${status.className}`} title={status.label}>
+                                {status.icon}
+                              </span>
+                            )
+                          })()}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -824,15 +1009,63 @@ export default function InboxPage() {
                   e.preventDefault()
                   sendMessage()
                 }}
-                className="flex gap-2"
+                className="flex gap-2 items-center"
               >
+                <div className="flex items-center gap-2">
+                  <label className="cursor-pointer">
+                    <span className="px-3 py-2 border rounded bg-muted hover:bg-muted/70 inline-flex items-center gap-1 text-sm">
+                      📎 Attach
+                    </span>
+                    <input
+                      type="file"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        setSelectedFile(file || null)
+                      }}
+                      disabled={loading}
+                    />
+                  </label>
+                  {selectedFile && (
+                    <span className="text-xs text-muted-foreground">
+                      {selectedFile.name}
+                    </span>
+                  )}
+                </div>
+                <div className="relative">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowEmojiPicker((prev) => !prev)}
+                  >
+                    😊
+                  </Button>
+                  {showEmojiPicker && (
+                    <div className="absolute bottom-12 left-0 bg-popover border rounded shadow p-2 grid grid-cols-6 gap-1 z-10">
+                      {["😀","😃","😄","😁","😆","😅","😂","😊","😍","🤔","👍","🙏","🎉","🔥","❤️","👏"].map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          className="text-lg"
+                          onClick={() => {
+                            setMessageText((prev) => prev + emoji)
+                            setShowEmojiPicker(false)
+                          }}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <Input
                   value={messageText}
                   onChange={(e) => setMessageText(e.target.value)}
                   placeholder="Type a message..."
                   disabled={loading}
                 />
-                <Button type="submit" disabled={loading || !messageText.trim()}>
+                <Button type="submit" disabled={loading || (!messageText.trim() && !selectedFile)}>
                   Send
                 </Button>
               </form>

@@ -7,11 +7,16 @@ import { metaProvider } from "@/providers/meta"
 import { sseBroadcaster } from "@/lib/sse-broadcaster"
 import type { EvolutionChannelConfig } from "@/providers/evolution/send"
 import type { MetaChannelConfig } from "@/providers/meta/send"
+import type { EvolutionSendMediaResponse } from "@/providers/evolution/types"
 import { decrypt } from "@/lib/encryption"
 
 const sendMessageSchema = z.object({
   conversationId: z.string(),
-  text: z.string().min(1),
+  text: z.string().optional(),
+  mediaBase64: z.string().optional(),
+  fileName: z.string().optional(),
+  mimeType: z.string().optional(),
+  mediaType: z.enum(["image", "video", "audio", "document"]).optional(),
 })
 
 // POST /api/messages/send - Send a message
@@ -70,6 +75,8 @@ export async function POST(req: NextRequest) {
 
     // Send message via appropriate provider
     let externalMessageId: string
+    let messageType: "text" | "image" | "video" | "audio" = "text"
+    let mediaUrlFromResponse: string | undefined
     const sentAt = new Date()
 
     if (channelAccount.type === "whatsapp_evolution") {
@@ -87,13 +94,52 @@ export async function POST(req: NextRequest) {
         encryptedApiKey: channelAccount.encryptedApiKey,
       }
 
-      const response = await evolutionProvider.sendTextMessage(
-        config,
-        contactExternalId,
-        validated.text
-      ) as { key?: { id?: string } }
+      // Check if this is a media message
+      if (validated.mediaBase64 && validated.fileName && validated.mimeType && validated.mediaType) {
+        // Send media message
+        const response = await evolutionProvider.sendMediaMessage(
+          config,
+          contactExternalId,
+          validated.mediaType,
+          validated.mediaBase64,
+          validated.fileName,
+          validated.mimeType,
+          validated.text || undefined
+        ) as EvolutionSendMediaResponse
 
-      externalMessageId = response.key?.id || `sent-${Date.now()}`
+        externalMessageId = response.key?.id || `sent-${Date.now()}`
+        messageType = validated.mediaType
+        
+        // Try to extract mediaUrl from response
+        let mediaUrlFromResponse: string | undefined
+        if (response.message) {
+          if (response.message.imageMessage) {
+            mediaUrlFromResponse = (response.message.imageMessage as any)?.mediaUrl || (response.message.imageMessage as any)?.url
+          } else if (response.message.videoMessage) {
+            mediaUrlFromResponse = (response.message.videoMessage as any)?.mediaUrl || (response.message.videoMessage as any)?.url
+          } else if (response.message.audioMessage) {
+            mediaUrlFromResponse = (response.message.audioMessage as any)?.mediaUrl || (response.message.audioMessage as any)?.url
+          } else if (response.message.documentMessage) {
+            mediaUrlFromResponse = (response.message.documentMessage as any)?.url
+          }
+        }
+      } else {
+        // Send text message
+        if (!validated.text || !validated.text.trim()) {
+          return NextResponse.json(
+            { error: "Text or media is required" },
+            { status: 400 }
+          )
+        }
+
+        const response = await evolutionProvider.sendTextMessage(
+          config,
+          contactExternalId,
+          validated.text
+        ) as { key?: { id?: string } }
+
+        externalMessageId = response.key?.id || `sent-${Date.now()}`
+      }
     } else if (channelAccount.type === "facebook_page" || channelAccount.type === "instagram_business") {
       if (!channelAccount.encryptedApiKey) {
         return NextResponse.json(
@@ -124,19 +170,28 @@ export async function POST(req: NextRequest) {
     }
 
     // Create message record
+    const rawPayloadData: Record<string, unknown> = {
+      provider: channelAccount.type,
+      externalMessageId,
+      mediaType: messageType !== "text" ? messageType : undefined,
+      fileName: validated.fileName,
+    }
+    
+    // Add mediaUrl if available from response (for immediate display)
+    if (typeof mediaUrlFromResponse !== "undefined") {
+      rawPayloadData.mediaUrl = mediaUrlFromResponse
+    }
+    
     const message = await prisma.message.create({
       data: {
         workspaceId: context.workspaceId,
         conversationId: validated.conversationId,
         direction: "outbound",
-        messageType: "text",
-        body: validated.text,
+        messageType,
+        body: validated.text || (messageType === "image" ? "[Image]" : messageType === "video" ? "[Video]" : messageType === "audio" ? "[Audio]" : "[Document]"),
         externalMessageId,
         sentAt,
-        rawPayload: {
-          provider: channelAccount.type,
-          externalMessageId,
-        },
+        rawPayload: rawPayloadData,
       },
     })
 

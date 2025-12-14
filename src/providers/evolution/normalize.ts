@@ -21,14 +21,27 @@ export function normalizeEvolutionWebhook(
   payload: EvolutionWebhookPayload,
   channelExternalId: string
 ): CanonicalInboundEvent | null {
-  // Only process message events
-  if (payload.event !== "messages.upsert" && payload.event !== "messages.update") {
+  // Process message events: messages.upsert, messages.update, and send.message
+  if (payload.event !== "messages.upsert" && payload.event !== "messages.update" && payload.event !== "send.message") {
     return null
   }
 
   const data = payload.data
-  const key = data.key
-  const message = data.message
+  
+  // For send.message event, structure might be slightly different
+  // Check if key is directly in data or nested
+  let key = data.key
+  let message = data.message
+  
+  // For send.message, message might be at data.message or data.data.message
+  if (!message && (data as any).data?.message) {
+    message = (data as any).data.message
+  }
+  
+  // For send.message, key might be at data.key or data.data.key
+  if (!key && (data as any).data?.key) {
+    key = (data as any).data.key
+  }
 
   if (!key || !message) {
     return null
@@ -45,8 +58,14 @@ export function normalizeEvolutionWebhook(
     return null
   }
 
-  // Remove @s.whatsapp.net suffix if present
-  const contactExternalId = remoteJid.split("@")[0]
+  // Remove suffixes: @s.whatsapp.net and device suffix like ":79"
+  const contactExternalId = remoteJid.split("@")[0].split(":")[0]
+
+  // Also try remoteJidAlt if provided (some payloads include alternate)
+  const remoteJidAlt = (key as any).remoteJidAlt
+  const altContactExternalId = remoteJidAlt
+    ? remoteJidAlt.split("@")[0].split(":")[0]
+    : undefined
 
   // Extract message text and type
   let text: string | undefined
@@ -54,12 +73,20 @@ export function normalizeEvolutionWebhook(
   let mediaUrl: string | undefined
   
   // Check for mediaUrl (S3/Minio integration) - PRIORITY
-  // Evolution API includes mediaUrl at data.message level when S3/Minio is configured
-  // Check data.message.mediaUrl first (S3/Minio integration)
+  // Evolution API includes mediaUrl at different levels depending on event type
+  // For send.message: mediaUrl is at data.message.mediaUrl
+  // For messages.upsert: mediaUrl might be at data.message.mediaUrl or data.mediaUrl
+  // Check data.message.mediaUrl first (S3/Minio integration for send.message)
   if ((message as any)?.mediaUrl && typeof (message as any).mediaUrl === "string") {
     mediaUrl = (message as any).mediaUrl
   } else if (data.mediaUrl && typeof data.mediaUrl === "string") {
     mediaUrl = data.mediaUrl
+  }
+  
+  // Also check if mediaUrl is nested in message object for send.message event
+  // send.message structure: data.message = { imageMessage: {...}, mediaUrl: "..." }
+  if (!mediaUrl && payload.event === "send.message" && (data as any).message?.mediaUrl) {
+    mediaUrl = (data as any).message.mediaUrl
   }
 
   if (message.conversation) {
@@ -113,7 +140,7 @@ export function normalizeEvolutionWebhook(
   return {
     channelType: "whatsapp_evolution",
     channelExternalId,
-    contactExternalId,
+    contactExternalId: contactExternalId || altContactExternalId || remoteJid.split("@")[0],
     contactName: data.pushName || undefined,
     eventType: "message",
     direction, // Added to support outbound messages
