@@ -83,15 +83,20 @@ curl -X POST https://your-evolution-api.com/webhook/set/YOUR_INSTANCE_NAME \
   -H "apikey: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "url": "https://your-domain.com/api/webhooks/evolution",
-    "webhook_by_events": true,
-    "webhook_base64": false,
-    "events": [
-      "MESSAGES_UPSERT",
-      "MESSAGES_UPDATE"
-    ]
+    "webhook": {
+      "url": "https://your-domain.com/api/webhooks/evolution",
+      "enabled": true,
+      "webhookByEvents": false,
+      "webhookBase64": false,
+      "events": [
+        "MESSAGES_UPSERT",
+        "MESSAGES_UPDATE"
+      ]
+    }
   }'
 ```
+
+**Önemli:** `webhookByEvents: false` olmalı (tüm event'ler tek endpoint'e gider, `/api/webhooks/evolution`).
 
 **veya Evolution API Admin Panel'den:**
 
@@ -139,9 +144,15 @@ curl -X POST https://your-evolution-api.com/webhook/set/YOUR_INSTANCE_NAME \
    ```
    - `WebhookEvent` tablosunu kontrol edin
 
+## S3/Minio Entegrasyonu (Medya Dosyaları İçin)
+
+Medya dosyalarını (resim, video, ses) görüntülemek için S3 veya Minio entegrasyonu yapmanız önerilir. Detaylı rehber için:
+- [EVOLUTION_S3_SETUP.md](./EVOLUTION_S3_SETUP.md)
+
 ## Evolution API Dokümantasyonu
 
 Daha fazla bilgi için:
 - [Evolution API GitHub](https://github.com/EvolutionAPI/evolution-api)
+- [Evolution API S3/Minio Dokümantasyonu](https://doc.evolution-api.com/v2/pt/integrations/s3minio#webhook-com-mediaurl)
 - [Evolution API Dokümantasyon](https://doc.evolution-api.com/)
 

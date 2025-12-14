@@ -116,29 +116,39 @@ export async function processInboundEvent(
         contactId: contactRecord.id,
         status: "open",
         lastMessageAt: event.message.timestamp,
-        unreadCount: 1,
+        unreadCount: event.direction === "inbound" ? 1 : 0, // Only set unreadCount for inbound messages
       },
     })
   } else {
     // Update conversation
+    // Only increment unreadCount for inbound messages
     conversation = await prisma.conversation.update({
       where: { id: conversation.id },
       data: {
         lastMessageAt: event.message.timestamp,
-        unreadCount: {
+        unreadCount: event.direction === "inbound" ? {
           increment: 1,
-        },
+        } : undefined,
         status: conversation.status === "closed" ? "open" : conversation.status,
       },
     })
   }
 
-  // Determine message type from event type
-  let messageType: "text" | "image" | "audio" | "system" | "comment" = "text"
+  // Determine message type from event type or message data
+  let messageType: "text" | "image" | "video" | "audio" | "system" | "comment" = "text"
   if (event.eventType === "comment") {
     messageType = "comment"
   } else if (event.eventType === "reply") {
     messageType = "comment" // Replies are also comments
+  } else if (event.message.messageType) {
+    // Use messageType from normalized event (for media messages)
+    messageType = event.message.messageType
+  }
+
+  // Store media URL in rawPayload if available
+  const rawPayload = event.message.rawPayload as Record<string, unknown>
+  if (event.message.mediaUrl) {
+    rawPayload.mediaUrl = event.message.mediaUrl
   }
 
   // Insert message
@@ -146,12 +156,14 @@ export async function processInboundEvent(
     data: {
       workspaceId,
       conversationId: conversation.id,
-      direction: "inbound",
+      direction: event.direction, // Use direction from event (inbound or outbound)
       messageType,
-      body: event.message.text,
+      body: event.message.text || (messageType === "image" ? "[Image]" : messageType === "video" ? "[Video]" : messageType === "audio" ? "[Audio]" : null),
+      mediaUrl: event.message.mediaUrl, // Save mediaUrl for outbound messages too
       externalMessageId: event.message.externalMessageId,
-      receivedAt: event.message.timestamp,
-      rawPayload: event.message.rawPayload,
+      sentAt: event.direction === "outbound" ? event.message.timestamp : null,
+      receivedAt: event.direction === "inbound" ? event.message.timestamp : null,
+      rawPayload,
     },
   })
 }

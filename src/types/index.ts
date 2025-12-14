@@ -4,7 +4,7 @@ export type ConversationStatus = "open" | "pending" | "closed"
 
 export type MessageDirection = "inbound" | "outbound"
 
-export type MessageType = "text" | "image" | "audio" | "system" | "comment"
+export type MessageType = "text" | "image" | "video" | "audio" | "system" | "comment"
 
 export type WorkspaceRole = "owner" | "admin" | "agent"
 
@@ -27,8 +27,11 @@ export interface CanonicalInboundEvent {
   contactExternalId: string
   contactName?: string
   eventType: "message" | "comment" | "reply"
+  direction: "inbound" | "outbound" // Added to support outbound messages
   message: {
     text?: string
+    messageType?: "text" | "image" | "video" | "audio"
+    mediaUrl?: string
     timestamp: Date
     externalMessageId: string
     rawPayload: unknown

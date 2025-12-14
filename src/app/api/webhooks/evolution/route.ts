@@ -18,26 +18,26 @@ const evolutionWebhookSchema = z.object({
     message: z.any().optional(),
     messageTimestamp: z.number().optional(),
     pushName: z.string().optional(),
+    mediaUrl: z.string().optional(), // S3/Minio integration - direct media URL
   }).optional(),
 })
 
 export async function POST(req: NextRequest) {
   try {
-    // Log request details for debugging
-    console.log("=== Evolution Webhook Received ===")
-    console.log("URL:", req.url)
-    console.log("Method:", req.method)
-    console.log("Headers:", Object.fromEntries(req.headers.entries()))
-    
     const body = await req.json()
-    console.log("Body:", JSON.stringify(body, null, 2))
+    const eventType = body?.event
+    const instanceName = body?.instance
+    
+    // Only log important events
+    if (eventType === "messages.upsert" || eventType === "messages.update") {
+      console.log(`[Webhook] ${eventType} from ${instanceName}`)
+    }
     
     // Validate payload
     const validated = evolutionWebhookSchema.parse(body)
     const payload = validated as EvolutionWebhookPayload
 
     // Extract instance name
-    const instanceName = payload.instance
     if (!instanceName) {
       return NextResponse.json(
         { error: "Instance name is required" },
@@ -55,16 +55,13 @@ export async function POST(req: NextRequest) {
     })
 
     if (!channelAccount) {
-      // Still log the webhook but don't process
-      console.warn(`Channel account not found for instance: ${instanceName}`)
-      console.log("Available channels:", await prisma.channelAccount.findMany({
-        where: { type: "whatsapp_evolution" },
-        select: { externalId: true, displayName: true }
-      }))
+      console.warn(`[Webhook] Channel not found for instance: ${instanceName}`)
       return NextResponse.json({ received: true, error: "Channel not found" }, { status: 200 })
     }
 
-    console.log(`Processing webhook for instance: ${instanceName}, channel: ${channelAccount.id}`)
+    // Get channel account metadata for baseUrl
+    const channelMetadata = channelAccount.metadata as { baseUrl?: string } | null
+    const baseUrl = channelMetadata?.baseUrl || ""
 
     // Normalize webhook
     const normalized = evolutionProvider.normalizeWebhook(
@@ -74,11 +71,32 @@ export async function POST(req: NextRequest) {
 
     if (!normalized) {
       // Not a message event we care about
-      console.log(`Event ${payload.event} not normalized (not a message event we care about)`)
       return NextResponse.json({ received: true, skipped: true }, { status: 200 })
     }
 
-    console.log("Normalized event:", JSON.stringify(normalized, null, 2))
+    // Handle media messages
+    // If S3/Minio is configured, Evolution API provides direct mediaUrl in webhook
+    // Otherwise, we need to use proxy endpoint for WhatsApp encrypted URLs
+    if (normalized && (normalized.message.messageType === "video" || normalized.message.messageType === "image" || normalized.message.messageType === "audio")) {
+      // Check if mediaUrl is from S3/Minio (direct access URL)
+      // S3 URLs typically contain: s3.amazonaws.com, s3.[region].amazonaws.com, or minio endpoints
+      const isS3Url = normalized.message.mediaUrl && 
+        !normalized.message.mediaUrl.includes("mmg.whatsapp.net") &&
+        (normalized.message.mediaUrl.includes("s3.amazonaws.com") ||
+         normalized.message.mediaUrl.includes("s3.") ||
+         normalized.message.mediaUrl.includes("minio") ||
+         (normalized.message.mediaUrl.startsWith("http://") || normalized.message.mediaUrl.startsWith("https://")))
+      
+      if (!isS3Url) {
+        // WhatsApp encrypted URL - need proxy endpoint
+        const messageId = payload.data?.key?.id || normalized.message.externalMessageId
+        
+        if (messageId) {
+          // Use our proxy endpoint to fetch from Evolution API
+          normalized.message.mediaUrl = `/api/media/evolution?instance=${encodeURIComponent(instanceName)}&messageId=${encodeURIComponent(messageId)}`
+        }
+      }
+    }
 
     // Generate dedupe key
     const messageId = normalized.message.externalMessageId
@@ -95,7 +113,7 @@ export async function POST(req: NextRequest) {
           workspaceId: channelAccount.workspaceId,
           provider: "evolution",
           dedupeKey,
-          rawPayload: payload,
+          rawPayload: payload as any,
         },
       })
     } catch (error: unknown) {
